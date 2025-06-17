@@ -34,9 +34,19 @@ if not GEMINI_API_KEY:
     print("Please set it before running the bot.")
     exit(1)
 
+# --- NEW: LLM System Instruction ---
+# This instruction guides the LLM's behavior, personality, and response format.
+LLM_SYSTEM_INSTRUCTION = """
+你是一位知识渊博、经验丰富的中文专家和老师。你现在在一个中文Discord群组中，你将看到群组内的聊天记录，每条聊天内容的最前面是发送者的名字，请用中文回答所有成员的问题。
+"""
+
 # --- LangChain LLM and Memory Setup ---
 # Initialize the Gemini LLM for LangChain
-llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL_NAME, google_api_key=GEMINI_API_KEY)
+llm = ChatGoogleGenerativeAI(
+    model=GEMINI_MODEL_NAME, 
+    google_api_key=GEMINI_API_KEY,
+    model_kwargs={"system_instruction": LLM_SYSTEM_INSTRUCTION} # --- NEW: Pass the system instruction here ---
+)
 
 # Dictionary to store a ConversationChain instance for each channel.
 # Each ConversationChain will have its own memory.
@@ -49,7 +59,7 @@ conversation_chains = {}
 # MESSAGE_CONTENT is required to read message content from Discord.
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members = True # Ensure this intent is enabled to access member information like display_name
 
 # Initialize the Discord bot using discord.Client directly, as commands.Bot is not needed.
 client = discord.Client(intents=intents)
@@ -76,6 +86,15 @@ async def on_message(message):
 
     channel_id = message.channel.id
 
+    # Get the sender's display name or username
+    # message.author.display_name is the server nickname if set, otherwise username.
+    # message.author.global_name is the global display name if set.
+    # message.author.name is the original username.
+    # We prioritize display_name, then global_name, then name.
+    sender_name = message.author.display_name if message.author.display_name else \
+                  message.author.global_name if message.author.global_name else \
+                  message.author.name
+
     # Initialize conversation chain for the channel if it doesn't exist
     if channel_id not in conversation_chains:
         # ConversationBufferWindowMemory keeps a rolling window of past interactions
@@ -87,9 +106,11 @@ async def on_message(message):
     is_bot_mentioned = client.user.mentioned_in(message)
     text_content = message.content.strip()
 
-    # Add any user message to the conversation history, regardless of whether the bot is mentioned.
-    print(f"Adding message to memory (no immediate LLM invocation): {message.author}: {text_content}")
-    conversation_chains[channel_id].memory.chat_memory.add_user_message(text_content)
+    # Prepend the sender's name to the message content before adding to memory
+    # This helps the LLM differentiate between speakers.
+    formatted_message_for_memory = f"{sender_name}: {text_content}"
+    print(f"Adding message to memory (no immediate LLM invocation): {formatted_message_for_memory}")
+    conversation_chains[channel_id].memory.chat_memory.add_user_message(formatted_message_for_memory)
 
 
     # Now, if the bot is mentioned, then we invoke the LLM
@@ -97,11 +118,14 @@ async def on_message(message):
         # Remove the bot's mention from the message content.
         cleaned_text_content = message.content.replace(f'<@{client.user.id}>', '').strip()
 
-        if not cleaned_text_content:
-            await message.channel.send("You mentioned me, but didn't say anything! What's on your mind?")
-            return
+        # if not cleaned_text_content:
+        #     await message.channel.send("You mentioned me, but didn't say anything! What's on your mind?")
+        #     return
 
-        print(f"Received LLM invocation request from {message.author} in channel {channel_id}: {cleaned_text_content}")
+        # Prepend the sender's name to the cleaned input for the LLM
+        # This ensures the LLM knows who is asking the current question.
+        formatted_input_for_llm = f"{sender_name}: {cleaned_text_content}"
+        print(f"Received LLM invocation request from {message.author} in channel {channel_id}: {formatted_input_for_llm}")
 
         # Indicate that the bot is typing
         async with message.channel.typing():
@@ -109,7 +133,7 @@ async def on_message(message):
                 # LangChain's ConversationChain handles generating the response
                 # using the existing memory and the current input.
                 response_text = await asyncio.to_thread(
-                    conversation_chains[channel_id].predict, input=cleaned_text_content
+                    conversation_chains[channel_id].predict, input=formatted_input_for_llm
                 )
 
                 print(f"LLM generated response (length {len(response_text)}): {response_text[:100]}...") # Log first 100 chars
@@ -117,6 +141,7 @@ async def on_message(message):
                 # --- NEW LOGIC: Handle Discord's 2000 character limit ---
                 if len(response_text) > DISCORD_MAX_MESSAGE_LENGTH:
                     # Split the response into chunks
+                    # TODO: Split at \n
                     chunks = [response_text[i:i + DISCORD_MAX_MESSAGE_LENGTH]
                               for i in range(0, len(response_text), DISCORD_MAX_MESSAGE_LENGTH)]
                     print(f"Response too long, splitting into {len(chunks)} chunks.")
