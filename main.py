@@ -95,6 +95,55 @@ async def get_image_as_base64(url: str) -> tuple[str, str] | None:
         print(f"Error fetching or encoding image from {url}: {e}")
         return None
 
+def split_long_text(text: str, max_length: int = 2000) -> list[str]:
+    """
+    Splits a long text into chunks, prioritizing newline characters to avoid breaking sentences.
+    If a single line is longer than max_length, it will be split by character count.
+
+    Args:
+        text (str): The long text to be split.
+        max_length (int): The maximum length for each chunk. Defaults to 2000 for Discord.
+
+    Returns:
+        list[str]: A list of text chunks.
+    """
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+    lines = text.split('\n')
+
+    for line in lines:
+        # Check if adding the current line (plus a newline if it's not the first part of the chunk)
+        # would exceed the max length
+        # The '1' accounts for the newline character that will be added if current_chunk is not empty.
+        if len(current_chunk) + len(line) + (1 if current_chunk else 0) <= max_length:
+            if current_chunk:
+                current_chunk += '\n'
+            current_chunk += line
+        else:
+            # If the current chunk is not empty, add it to chunks
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            # Now handle the line that didn't fit
+            # If the line itself is too long, split it by character count
+            if len(line) > max_length:
+                # Split this long line into sub-chunks
+                for i in range(0, len(line), max_length):
+                    chunks.append(line[i:i + max_length])
+                current_chunk = "" # Reset current_chunk after splitting a very long line
+            else:
+                # If the line fits in a new chunk, start a new chunk with it
+                current_chunk = line
+
+    # Add any remaining content in current_chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
 # --- Event Handlers ---
 
 @client.event
@@ -210,8 +259,7 @@ async def on_message(message):
 
                 # --- Handle Discord's 2000 character limit ---
                 if len(response_text) > DISCORD_MAX_MESSAGE_LENGTH:
-                    chunks = [response_text[i:i + DISCORD_MAX_MESSAGE_LENGTH]
-                              for i in range(0, len(response_text), DISCORD_MAX_MESSAGE_LENGTH)]
+                    chunks = split_long_text(response_text, DISCORD_MAX_MESSAGE_LENGTH)
                     print(f"Response too long, splitting into {len(chunks)} chunks.")
                     for i, chunk in enumerate(chunks):
                         await message.channel.send(chunk)
