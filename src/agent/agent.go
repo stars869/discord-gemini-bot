@@ -104,17 +104,9 @@ func (a *Agent) GetResponse(ctx context.Context) (string, error) {
 				aiMsg := types.NewMessage("AI", []types.MessageContent{{Type: "text", Content: observation}})
 				a.AddMessage(aiMsg)
 
-				// Get a new response with the tool's output
+				// Get a new response with the tool's output using conversation history
 				history := a.memory.GetHistory()
-				prompt := fmt.Sprintf("%s\n\nTOOLS:\n------\n%s\n\nPrevious conversation history:\n%s\n\nFinal Answer:",
-					prompts.GetAgentSystemPromptTemplate(),
-					a.getToolsString(),
-					a.formatHistory(history))
-
-				log.Printf("Prompt sent to model after tool use")
-
-				// Generate follow-up response
-				response, err = a.model.GenerateAsync(ctx, prompt, nil)
+				response, err = a.model.GenerateWithHistoryAsync(ctx, history)
 				if err != nil {
 					return "", fmt.Errorf("error generating follow-up response: %w", err)
 				}

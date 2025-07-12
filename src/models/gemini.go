@@ -168,12 +168,3 @@ func (g *Gemini) Close() error {
 	// The genai.Client doesn't have a Close method, so this is a no-op
 	return nil
 }
-
-// GetModelInfo returns information about the model
-func (g *Gemini) GetModelInfo() map[string]interface{} {
-	return map[string]interface{}{
-		"name":        g.modelName,
-		"temperature": g.temperature,
-		"maxTokens":   g.maxTokens,
-	}
-}
