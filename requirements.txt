@@ -1,4 +1,0 @@
-langchain
-langchain-google-genai
-discord.py
-python-dotenv

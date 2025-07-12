@@ -2,9 +2,9 @@ import os
 import discord
 import asyncio
 import logging
-
-from gemini_client import GeminiClient
-from memory import ConversationMemory
+from google import genai
+from types.memory import ConversationMemory
+from models import Gemini
 from agent import Agent
 from tools.google_search import GoogleSearchTool
 from tools.url_fetch import UrlFetchTool
@@ -31,11 +31,10 @@ MEMORY_WINDOW_SIZE = 20
 DISCORD_MAX_MESSAGE_LENGTH = 2000
 
 # Supported image content types for the LLM
-SUPPORTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
-
+DISCORD_SUPPORTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
 # --- Initialize components ---
-gemini_client = GeminiClient(api_key=GEMINI_API_KEY)
+model = Gemini(GEMINI_API_KEY, "gemini-2.5-flash")
 
 # Initialize tools
 tools = [
@@ -84,15 +83,15 @@ async def on_message(message):
         # Process attachments for images
         if message.attachments:
             for attachment in message.attachments:
-                if attachment.content_type and attachment.content_type in SUPPORTED_IMAGE_TYPES:
+                if attachment.content_type and attachment.content_type in DISCORD_SUPPORTED_IMAGE_TYPES:
                     image_data = await get_image_as_base64(attachment.url)
                     if image_data:
-                        images.append(image_data)
+                        images.append((attachment.content_type, image_data))
 
         # If no text and no images, ignore the message
-        if not cleaned_text_for_llm_input and not images:
-            logger.info(f"Ignoring empty message from {message.author.display_name} in channel {message.channel.id}")
-            return
+        # if not cleaned_text_for_llm_input and not images:
+        #     logger.info(f"Ignoring empty message from {message.author.display_name} in channel {message.channel.id}")
+        #     return
 
         # Indicate that the bot is typing
         async with message.channel.typing():
@@ -102,7 +101,8 @@ async def on_message(message):
                     logger.info(f"Creating new agent for channel {channel_id}")
                     # Create a new memory and agent for this channel
                     memory = ConversationMemory(window_size=MEMORY_WINDOW_SIZE)
-                    channel_agents[channel_id] = Agent(gemini_client=gemini_client, memory=memory, tools=tools)
+                    # Pass model instead of gemini_client
+                    channel_agents[channel_id] = Agent(model=model, memory=memory, tools=tools)
                 
                 current_agent = channel_agents[channel_id]
 
