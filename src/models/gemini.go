@@ -3,18 +3,15 @@ package models
 import (
 	"context"
 	"discord-gemini-bot/src/types"
+	"encoding/base64"
 	"fmt"
-	"log"
 
-	"github.com/google/generative-ai-go/genai"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 )
 
 // Gemini implements the LLMModel interface using Google's Gemini API
 type Gemini struct {
 	client       *genai.Client
-	model        *genai.GenerativeModel
-	apiKey       string
 	modelName    string
 	systemPrompt string
 	temperature  float32
@@ -26,25 +23,23 @@ func NewGemini(apiKey, modelName string) (*Gemini, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("API key is required")
 	}
-	
+
 	if modelName == "" {
 		modelName = "gemini-2.0-flash-exp"
 	}
 
 	ctx := context.Background()
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	clientConfig := &genai.ClientConfig{
+		APIKey: apiKey,
+	}
+
+	client, err := genai.NewClient(ctx, clientConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create genai client: %w", err)
 	}
 
-	model := client.GenerativeModel(modelName)
-	model.SetTemperature(1.0)
-	model.SetMaxOutputTokens(8192)
-
 	return &Gemini{
 		client:      client,
-		model:       model,
-		apiKey:      apiKey,
 		modelName:   modelName,
 		temperature: 1.0,
 		maxTokens:   8192,
@@ -54,31 +49,50 @@ func NewGemini(apiKey, modelName string) (*Gemini, error) {
 // SetSystemPrompt sets the system prompt for the model
 func (g *Gemini) SetSystemPrompt(systemPrompt string) {
 	g.systemPrompt = systemPrompt
-	g.model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{genai.Text(systemPrompt)},
-	}
 }
 
 // GenerateAsync generates text asynchronously based on the given prompt
 func (g *Gemini) GenerateAsync(ctx context.Context, prompt string, images []map[string]interface{}) (string, error) {
-	// Build parts for the request
-	parts := []genai.Part{genai.Text(prompt)}
-	
+	// Build content parts
+	contents := []*genai.Content{
+		genai.NewContentFromText(prompt, genai.RoleUser),
+	}
+
 	// Add images if provided
-	for _, image := range images {
-		if data, ok := image["data"].(string); ok {
-			if mimeType, ok := image["mime_type"].(string); ok {
-				// Convert base64 string to blob
-				blob := genai.Blob{
-					MIMEType: mimeType,
-					Data:     []byte(data), // This might need base64 decoding
+	if len(images) > 0 {
+		parts := []*genai.Part{genai.NewPartFromText(prompt)}
+
+		for _, image := range images {
+			if data, ok := image["data"].(string); ok {
+				if mimeType, ok := image["mime_type"].(string); ok {
+					// Decode base64 data
+					imageBytes, err := base64.StdEncoding.DecodeString(data)
+					if err != nil {
+						continue // Skip invalid base64 images
+					}
+
+					parts = append(parts, genai.NewPartFromBytes(imageBytes, mimeType))
 				}
-				parts = append(parts, blob)
 			}
+		}
+
+		contents = []*genai.Content{
+			genai.NewContentFromParts(parts, genai.RoleUser),
 		}
 	}
 
-	resp, err := g.model.GenerateContent(ctx, parts...)
+	// Create generation config
+	config := &genai.GenerateContentConfig{
+		Temperature:     &g.temperature,
+		MaxOutputTokens: g.maxTokens,
+	}
+
+	// Add system instruction if available
+	if g.systemPrompt != "" {
+		config.SystemInstruction = genai.NewContentFromText(g.systemPrompt, genai.RoleUser)
+	}
+
+	resp, err := g.client.Models.GenerateContent(ctx, g.modelName, contents, config)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate content: %w", err)
 	}
@@ -87,16 +101,15 @@ func (g *Gemini) GenerateAsync(ctx context.Context, prompt string, images []map[
 		return "", fmt.Errorf("no candidates returned")
 	}
 
-	candidate := resp.Candidates[0]
-	if len(candidate.Content.Parts) == 0 {
+	if len(resp.Candidates[0].Content.Parts) == 0 {
 		return "", fmt.Errorf("no content parts returned")
 	}
 
 	// Extract text from the response
 	var result string
-	for _, part := range candidate.Content.Parts {
-		if text, ok := part.(genai.Text); ok {
-			result += string(text)
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part.Text != "" {
+			result += part.Text
 		}
 	}
 
@@ -105,62 +118,54 @@ func (g *Gemini) GenerateAsync(ctx context.Context, prompt string, images []map[
 
 // GenerateWithHistoryAsync generates text asynchronously with conversation history
 func (g *Gemini) GenerateWithHistoryAsync(ctx context.Context, messages []*types.Message) (string, error) {
-	// Convert messages to genai.Content format
+	// Convert messages to genai.Content format using ToGenaiContent
 	contents := make([]*genai.Content, 0, len(messages))
-	
 	for _, msg := range messages {
-		var role string
-		switch msg.Role {
-		case "user":
-			role = "user"
-		case "AI", "assistant":
-			role = "model"
-		default:
-			role = "user"
-		}
-		
-		content := &genai.Content{
-			Role:  role,
-			Parts: []genai.Part{genai.Text(msg.Content)},
+		content, err := msg.ToGenaiContent()
+		if err != nil {
+			return "", fmt.Errorf("failed to convert message to genai.Content: %w", err)
 		}
 		contents = append(contents, content)
 	}
 
-	// Create a chat session
-	cs := g.model.StartChat()
-	cs.History = contents
+	// Create generation config
+	config := &genai.GenerateContentConfig{
+		Temperature:     &g.temperature,
+		MaxOutputTokens: g.maxTokens,
+	}
 
-	// Generate response
-	resp, err := cs.SendMessage(ctx, genai.Text("Please respond to the conversation"))
+	// Add system instruction if available
+	if g.systemPrompt != "" {
+		config.SystemInstruction = genai.NewContentFromText(g.systemPrompt, genai.RoleUser)
+	}
+
+	resp, err := g.client.Models.GenerateContent(ctx, g.modelName, contents, config)
 	if err != nil {
-		return "", fmt.Errorf("failed to send message: %w", err)
+		return "", fmt.Errorf("failed to generate content with history: %w", err)
 	}
 
 	if len(resp.Candidates) == 0 {
 		return "", fmt.Errorf("no candidates returned")
 	}
 
-	candidate := resp.Candidates[0]
-	if len(candidate.Content.Parts) == 0 {
+	if len(resp.Candidates[0].Content.Parts) == 0 {
 		return "", fmt.Errorf("no content parts returned")
 	}
 
 	// Extract text from the response
 	var result string
-	for _, part := range candidate.Content.Parts {
-		if text, ok := part.(genai.Text); ok {
-			result += string(text)
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part.Text != "" {
+			result += part.Text
 		}
 	}
 
 	return result, nil
 }
 
-// Close closes the Gemini client
+// Close closes the Gemini client (no-op for this implementation)
 func (g *Gemini) Close() error {
-	if g.client != nil {
-		return g.client.Close()
-	}
+	// The genai.Client doesn't have a Close method, so this is a no-op
 	return nil
 }
 

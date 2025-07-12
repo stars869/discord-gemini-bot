@@ -61,14 +61,16 @@ func (a *Agent) getToolsString() string {
 	return strings.Join(toolDescriptions, "\n")
 }
 
+// AddMessage adds a message to the agent's memory
+func (a *Agent) AddMessage(message *types.Message) {
+	a.memory.AddMessage(message)
+}
+
 // GetResponse gets a response from the agent
-func (a *Agent) GetResponse(ctx context.Context, author, message string, images []map[string]interface{}) (string, error) {
-	// Add user message to memory
-	a.memory.AddMessage(author, message)
-	
+func (a *Agent) GetResponse(ctx context.Context) (string, error) {
 	// Get conversation history
 	messages := a.memory.GetHistory()
-	
+
 	// Generate response using the model
 	response, err := a.model.GenerateWithHistoryAsync(ctx, messages)
 	if err != nil {
@@ -80,13 +82,13 @@ func (a *Agent) GetResponse(ctx context.Context, author, message string, images 
 	// Check for tool use
 	toolRegex := regexp.MustCompile(`Action: (\w+)\nAction Input: (.*)`)
 	matches := toolRegex.FindStringSubmatch(response)
-	
+
 	if len(matches) >= 3 {
 		toolName := strings.TrimSpace(matches[1])
 		toolInput := strings.TrimSpace(matches[2])
-		
+
 		log.Printf("Tool use detected: %s with input %s", toolName, toolInput)
-		
+
 		tool, exists := a.tools[toolName]
 		if exists {
 			// Execute the tool
@@ -94,29 +96,29 @@ func (a *Agent) GetResponse(ctx context.Context, author, message string, images 
 			if err != nil {
 				log.Printf("Error executing tool %s: %v", toolName, err)
 				observation := fmt.Sprintf("Tool %s failed: %v", toolName, err)
-				a.memory.AddMessage("AI", observation)
+				aiMsg := types.NewMessage("AI", []types.MessageContent{{Type: "text", Content: observation}})
+				a.AddMessage(aiMsg)
 			} else {
 				observation := fmt.Sprintf("Tool %s used. Observation: %s", toolName, toolResult.ReturnDisplay)
 				log.Printf("Tool observation: %s", observation)
-				a.memory.AddMessage("AI", observation)
-				
+				aiMsg := types.NewMessage("AI", []types.MessageContent{{Type: "text", Content: observation}})
+				a.AddMessage(aiMsg)
+
 				// Get a new response with the tool's output
 				history := a.memory.GetHistory()
-				prompt := fmt.Sprintf("%s\n\nTOOLS:\n------\n%s\n\nPrevious conversation history:\n%s\n\nNew input: %s: %s\nFinal Answer:", 
-					prompts.GetAgentSystemPromptTemplate(), 
-					a.getToolsString(), 
-					a.formatHistory(history), 
-					author, 
-					message)
-				
+				prompt := fmt.Sprintf("%s\n\nTOOLS:\n------\n%s\n\nPrevious conversation history:\n%s\n\nFinal Answer:",
+					prompts.GetAgentSystemPromptTemplate(),
+					a.getToolsString(),
+					a.formatHistory(history))
+
 				log.Printf("Prompt sent to model after tool use")
-				
+
 				// Generate follow-up response
-				response, err = a.model.GenerateAsync(ctx, prompt, images)
+				response, err = a.model.GenerateAsync(ctx, prompt, nil)
 				if err != nil {
 					return "", fmt.Errorf("error generating follow-up response: %w", err)
 				}
-				
+
 				log.Printf("Model's raw response after tool use: %s", response)
 			}
 		} else {
@@ -125,17 +127,9 @@ func (a *Agent) GetResponse(ctx context.Context, author, message string, images 
 	}
 
 	// Add AI response to memory
-	a.memory.AddMessage("AI", response)
-	
+	aiMsg := types.NewMessage("AI", []types.MessageContent{{Type: "text", Content: response}})
+	a.AddMessage(aiMsg)
+
 	log.Printf("Agent's final response: %s", response)
 	return response, nil
-}
-
-// formatHistory formats the conversation history for the prompt
-func (a *Agent) formatHistory(messages []*types.Message) string {
-	var formatted []string
-	for _, msg := range messages {
-		formatted = append(formatted, fmt.Sprintf("%s: %s", msg.Role, msg.Content))
-	}
-	return strings.Join(formatted, "\n")
 }

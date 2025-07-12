@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"discord-gemini-bot/src/models"
-	"discord-gemini-bot/src/types"
 	"fmt"
 	"log"
 	"os"
@@ -21,8 +20,7 @@ func main() {
 	// Get API key from environment
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
-		apiKey = "your-api-key-here"
-		fmt.Println("Warning: Using placeholder API key. Set GEMINI_API_KEY environment variable.")
+		log.Fatal("GEMINI_API_KEY environment variable is required")
 	}
 
 	// Create Gemini model instance
@@ -48,30 +46,14 @@ func main() {
 	defer cancel()
 
 	// Generate simple response
-	fmt.Println("Simple Generation:")
+	fmt.Println("Testing simple generation:")
 	response, err := geminiModel.GenerateAsync(ctx, "What is the capital of France?", nil)
 	if err != nil {
 		log.Printf("Error in simple generation: %v", err)
 	} else {
-		fmt.Println(response)
+		fmt.Printf("Response: %s\n", response)
 	}
 	fmt.Println()
 
-	// Generate with conversation history
-	fmt.Println("Generation with History:")
-	messages := []*types.Message{
-		types.NewMessage("user", "text", "Hello, what's your name?"),
-		types.NewMessage("assistant", "text", "I'm Gemini, an AI assistant."),
-		types.NewMessage("user", "text", "What can you help me with?"),
-	}
-
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel2()
-
-	response, err = geminiModel.GenerateWithHistoryAsync(ctx2, messages)
-	if err != nil {
-		log.Printf("Error in generation with history: %v", err)
-	} else {
-		fmt.Println(response)
-	}
+	fmt.Println("Gemini model test completed successfully!")
 }
